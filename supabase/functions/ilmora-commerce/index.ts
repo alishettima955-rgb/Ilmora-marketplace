@@ -24,9 +24,15 @@ async function requireAdmin(req: Request) {
   const user = await getUser(req);
   if (!user) throw new Error("Please sign in again.");
   const { data: profile, error } = await admin.from("profiles").select("id,email,role").eq("id", user.id).maybeSingle();
-  if (error || profile?.role !== "admin" || profile.email?.toLowerCase() !== "umaraliibrahim36@gmail.com") {
+  if (error || !["admin", "super_admin"].includes(profile?.role || "")) {
     throw new Error("Administrator access required.");
   }
+  return user;
+}
+async function requireSuperAdmin(req: Request) {
+  const user = await requireAdmin(req);
+  const { data: profile, error } = await admin.from("profiles").select("role").eq("id", user.id).maybeSingle();
+  if (error || profile?.role !== "super_admin") throw new Error("Owner-level administrator access required.");
   return user;
 }
 async function sha256(value: string) {
@@ -174,6 +180,40 @@ Deno.serve(async (req: Request) => {
         if (!error && data?.signedUrl) result.push({ file_name: file.file_name, url: data.signedUrl, expires_in_seconds: 90 });
       }
       return json({ downloads: result, orders });
+    }
+
+    if (action === "admin_list_admins") {
+      await requireSuperAdmin(req);
+      const { data, error } = await admin.from("profiles").select("id,email,full_name,role,created_at").in("role", ["admin", "super_admin"]).order("created_at", { ascending: true });
+      if (error) throw error;
+      return json({ admins: data || [] });
+    }
+
+    if (action === "admin_add_admin") {
+      await requireSuperAdmin(req);
+      const email = String(body.email || "").trim().toLowerCase();
+      if (!email || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) return fail("Enter a valid email address.");
+      const { data: target, error: findError } = await admin.from("profiles").select("id,email,role").eq("email", email).maybeSingle();
+      if (findError) throw findError;
+      if (!target) return fail("This person must create a customer account on Ilmora before you can make them an admin.");
+      if (target.role === "super_admin") return fail("The owner account cannot be changed here.");
+      if (target.role === "admin") return fail("This person is already an administrator.");
+      const { data, error } = await admin.from("profiles").update({ role: "admin" }).eq("id", target.id).select("id,email,full_name,role").single();
+      if (error) throw error;
+      return json({ admin: data });
+    }
+
+    if (action === "admin_remove_admin") {
+      const actor = await requireSuperAdmin(req);
+      const targetId = String(body.user_id || "");
+      if (!targetId) return fail("Administrator user ID required.");
+      if (targetId === actor.id) return fail("You cannot remove your own owner access.");
+      const { data: target, error: findError } = await admin.from("profiles").select("id,role").eq("id", targetId).maybeSingle();
+      if (findError) throw findError;
+      if (!target || target.role !== "admin") return fail("Only additional administrators can be removed here.");
+      const { error } = await admin.from("profiles").update({ role: "customer" }).eq("id", targetId);
+      if (error) throw error;
+      return json({ ok: true });
     }
 
     if (action === "admin_payments") {
