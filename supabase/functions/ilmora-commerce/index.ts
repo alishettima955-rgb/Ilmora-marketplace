@@ -172,12 +172,18 @@ Deno.serve(async (req: Request) => {
       const { data: items, error: itemErr } = await admin.from("order_items").select("product_id").eq("order_id", orderId);
       if (itemErr) throw itemErr;
       const ids = [...new Set((items || []).map(i => i.product_id))];
-      const { data: files, error: fileErr } = await admin.from("product_files").select("id,product_id,file_name,storage_path").in("product_id", ids);
+      const { data: files, error: fileErr } = await admin.from("product_files").select("id,product_id,file_name,storage_path,folder_id").in("product_id", ids);
       if (fileErr) throw fileErr;
+      const folderIds = [...new Set((files || []).map((file: any) => file.folder_id).filter(Boolean))];
+      const { data: folders, error: folderErr } = folderIds.length
+        ? await admin.from("product_folders").select("id,name").in("id", folderIds)
+        : { data: [], error: null };
+      if (folderErr) throw folderErr;
+      const folderNames = new Map((folders || []).map((folder: any) => [folder.id, folder.name]));
       const downloads = [];
       for (const file of files || []) {
         const { data, error } = await admin.storage.from("digital-assets").createSignedUrl(file.storage_path, 90);
-        if (!error && data?.signedUrl) downloads.push({ file_name: file.file_name, url: data.signedUrl, expires_in_seconds: 90 });
+        if (!error && data?.signedUrl) downloads.push({ file_name: file.file_name, folder_name: folderNames.get(file.folder_id) || "General files", url: data.signedUrl, expires_in_seconds: 90 });
       }
       return json({ downloads });
     }
@@ -188,12 +194,18 @@ Deno.serve(async (req: Request) => {
       const { data: orders, error: ordersErr } = await admin.from("orders").select("id,reference,status,created_at,order_items(product_id,products(title_en,title_ar))").eq("user_id", user.id).eq("status", "paid").order("created_at", { ascending: false });
       if (ordersErr) throw ordersErr;
       const ids = [...new Set((orders || []).flatMap(o => (o.order_items || []).map((i: any) => i.product_id)))];
-      const { data: files, error: fileErr } = await admin.from("product_files").select("id,product_id,file_name,storage_path").in("product_id", ids.length ? ids : ["00000000-0000-0000-0000-000000000000"]);
+      const { data: files, error: fileErr } = await admin.from("product_files").select("id,product_id,file_name,storage_path,folder_id").in("product_id", ids.length ? ids : ["00000000-0000-0000-0000-000000000000"]);
       if (fileErr) throw fileErr;
+      const folderIds = [...new Set((files || []).map((file: any) => file.folder_id).filter(Boolean))];
+      const { data: folders, error: folderErr } = folderIds.length
+        ? await admin.from("product_folders").select("id,name").in("id", folderIds)
+        : { data: [], error: null };
+      if (folderErr) throw folderErr;
+      const folderNames = new Map((folders || []).map((folder: any) => [folder.id, folder.name]));
       const result = [];
       for (const file of files || []) {
         const { data, error } = await admin.storage.from("digital-assets").createSignedUrl(file.storage_path, 90);
-        if (!error && data?.signedUrl) result.push({ file_name: file.file_name, url: data.signedUrl, expires_in_seconds: 90 });
+        if (!error && data?.signedUrl) result.push({ file_name: file.file_name, folder_name: folderNames.get(file.folder_id) || "General files", url: data.signedUrl, expires_in_seconds: 90 });
       }
       return json({ downloads: result, orders });
     }
