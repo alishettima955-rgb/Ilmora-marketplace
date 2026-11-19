@@ -89,7 +89,7 @@ function addProductFolder(name='',folderId='',existingFiles=[]){
  const host=$('#productFolderList');if(!host)return;
  const card=document.createElement('div');card.className='review-card';card.dataset.productFolder='1';if(folderId)card.dataset.folderId=folderId;
  card.innerHTML=`<label>Folder name<input type="text" class="folder-name" maxlength="120" required value="${esc(name)}" placeholder="e.g. Semester 1"></label><label>Upload files<input class="folder-files" type="file" multiple accept=".pdf,.mp3,.m4a,.wav,.ogg,.mp4,.mov,.zip,.apk,.epub,.doc,.docx,.ppt,.pptx"></label><small class="muted existing-folder-files">${existingFiles.length? 'Already uploaded: '+existingFiles.map(f=>esc(f.file_name)).join(', '):'No files uploaded in this folder yet.'}</small><button type="button" class="small danger remove-product-folder">Remove folder</button>`;
- card.querySelector('.remove-product-folder').onclick=()=>{if(host.querySelectorAll('[data-product-folder]').length===1){alert('Keep at least one folder.');return;}if(!confirm('Remove this folder from the product? Existing files in it will remain available as ungrouped files.'))return;card.remove();};
+ card.querySelector('.remove-product-folder').onclick=()=>{if(host.querySelectorAll('[data-product-folder]:not([data-remove-folder-id])').length===1){alert('Keep at least one folder.');return;}if(!confirm('Remove this folder label? Its existing files will stay in the product under General files.'))return;if(card.dataset.folderId){card.dataset.removeFolderId=card.dataset.folderId;card.style.display='none';}else card.remove();};
  host.appendChild(card);
 }
 async function loadProductFolderEditor(productId){
@@ -113,7 +113,7 @@ async function saveProduct(e,id){
   let productId=id;
   if(id){const {error}=await sb.from('products').update(row).eq('id',id);if(error)throw error;}
   else{const {data,error}=await sb.from('products').insert(row).select('id').single();if(error)throw error;productId=data.id;}
-  for(const block of f.querySelectorAll('[data-product-folder]')){
+  for(const block of f.querySelectorAll('[data-product-folder]:not([data-remove-folder-id])')){
    const folderName=block.querySelector('.folder-name').value.trim();if(!folderName)continue;
    let folderId=block.dataset.folderId||null;
    if(folderId){const {error}=await sb.from('product_folders').update({name:folderName}).eq('id',folderId).eq('product_id',productId);if(error)throw error;}
@@ -124,6 +124,11 @@ async function saveProduct(e,id){
     const up=await sb.storage.from('digital-assets').upload(path,asset);if(up.error)throw up.error;
     const ins=await sb.from('product_files').insert({product_id:productId,folder_id:folderId,file_name:asset.name,storage_path:path,file_size_bytes:asset.size,mime_type:asset.type||'application/octet-stream'});if(ins.error)throw ins.error;
    }
+  }
+  for(const removed of f.querySelectorAll('[data-remove-folder-id]')){
+   const folderId=removed.dataset.removeFolderId;
+   const {error:fileUpdateError}=await sb.from('product_files').update({folder_id:null}).eq('folder_id',folderId);if(fileUpdateError)throw fileUpdateError;
+   const {error:folderDeleteError}=await sb.from('product_folders').delete().eq('id',folderId).eq('product_id',productId);if(folderDeleteError)throw folderDeleteError;
   }
   msg.textContent='Product and folders saved successfully.';await loadProducts();adminTab('products');
  }catch(err){msg.textContent='Could not save: '+err.message;msg.className='span2 error';}
