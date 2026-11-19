@@ -35,6 +35,20 @@ async function requireSuperAdmin(req: Request) {
   if (error || profile?.role !== "super_admin") throw new Error("Owner-level administrator access required.");
   return user;
 }
+async function notifyAdmins(orderId: string, title: string, message: string) {
+  try {
+    const { data: admins, error: adminsError } = await admin.from("profiles").select("id,email").in("role", ["admin", "super_admin"]);
+    if (adminsError) throw adminsError;
+    if (!admins?.length) return;
+    const { error } = await admin.from("notifications").insert(admins.map((person: { id: string; email: string }) => ({
+      user_id: person.id, recipient_email: person.email, order_id: orderId,
+      channel: "in_app", title, body: message, status: "unread",
+    })));
+    if (error) throw error;
+  } catch (error) {
+    console.error("Could not save admin notification:", error);
+  }
+}
 async function sha256(value: string) {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -108,6 +122,7 @@ Deno.serve(async (req: Request) => {
         await admin.from("orders").delete().eq("id", order.id);
         throw refErr;
       }
+      await notifyAdmins(order.id, "New order awaiting payment", `Order ${order.reference} was created for ${email}. It is waiting for payment.`);
       return json({ order, items: lines.map(l => ({ ...l, title: byId.get(l.product_id)!.title_en })), payment_accounts: usableAccounts, guest_access_token: guestToken });
     }
 
@@ -144,6 +159,7 @@ Deno.serve(async (req: Request) => {
       if (payErr) throw payErr;
       const { error: updateErr } = await admin.from("orders").update({ status: "awaiting_review" }).eq("id", order.id).eq("status", "pending");
       if (updateErr) throw updateErr;
+      await notifyAdmins(order.id, "Payment submitted for verification", `Order ${order.reference} has a payment submission from ${payerName}. Please verify the transfer in your bank or wallet.`);
       return json({ ok: true, reference: order.reference, status: "awaiting_review", message: "Payment details submitted. Your order will be available after the administrator confirms the transfer." });
     }
 
@@ -180,6 +196,22 @@ Deno.serve(async (req: Request) => {
         if (!error && data?.signedUrl) result.push({ file_name: file.file_name, url: data.signedUrl, expires_in_seconds: 90 });
       }
       return json({ downloads: result, orders });
+    }
+
+    if (action === "admin_notifications") {
+      const user = await requireAdmin(req);
+      const { data, error } = await admin.from("notifications").select("id,order_id,title,body,status,created_at,read_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(50);
+      if (error) throw error;
+      return json({ notifications: data || [] });
+    }
+
+    if (action === "admin_mark_notification_read") {
+      const user = await requireAdmin(req);
+      const notificationId = String(body.notification_id || "");
+      if (!notificationId) return fail("Notification ID required.");
+      const { error } = await admin.from("notifications").update({ status: "read", read_at: new Date().toISOString() }).eq("id", notificationId).eq("user_id", user.id);
+      if (error) throw error;
+      return json({ ok: true });
     }
 
     if (action === "admin_list_admins") {
